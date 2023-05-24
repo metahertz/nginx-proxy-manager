@@ -728,6 +728,28 @@ const internalCertificate = {
 	},
 
 	/**
+	 * Parse the X509 subject line as returned by the OpenSSL command when
+	 * invoked with openssl x509 -in <certificate name> -subject -noout
+	 *
+	 * @param {String}  line emitted from the openssl command
+	 * @param {String}  prefix expected to be removed
+	 * @return {Object} object containing the parsed fields from the subject line
+	 */
+	parseX509Output: (line, prefix) => {
+		// Remove the subject= part
+		const subject_value = line.slice(prefix.length);
+
+		const subject = subject_value.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
+			.map( (e) => { return e.trim().split(' = ', 2); })
+			.reduce((obj, [key, value]) => {
+				obj[key] = value.replace(/^"/, '').replace(/"$/, '');
+				return obj;
+			}, {});
+
+		return subject;
+	},
+
+	/**
 	 * Uses the openssl command to both validate and get info out of the certificate.
 	 * It will save the file to disk first, then run commands on it, then delete the file.
 	 *
@@ -742,11 +764,14 @@ const internalCertificate = {
 				// Examples:
 				// subject=CN = *.jc21.com
 				// subject=CN = something.example.com
-				const regex = /(?:subject=)?[^=]+=\s+(\S+)/gim;
-				const match = regex.exec(result);
-				if (match && typeof match[1] !== 'undefined') {
-					certData.cn = match[1];
+				// subject=C = NoCountry, O = NoOrg, OU = NoOrgUnit, CN = Some Value With Spaces
+				const subjectParams = internalCertificate.parseX509Output(result, 'subject=');
+
+				if (typeof subjectParams.CN === 'undefined') {
+					throw new error.ValidationError('Could not determine subject from certificate: ' + result);
 				}
+
+				certData['cn'] = subjectParams.CN;
 			})
 			.then(() => {
 				return utils.execFile('openssl', ['x509', '-in', certificate_file, '-issuer', '-noout']);
@@ -755,13 +780,13 @@ const internalCertificate = {
 			.then((result) => {
 				// Examples:
 				// issuer=C = US, O = Let's Encrypt, CN = Let's Encrypt Authority X3
-				// issuer=C = US, O = Let's Encrypt, CN = E5
-				// issuer=O = NginxProxyManager, CN = NginxProxyManager Intermediate CA","O = NginxProxyManager, CN = NginxProxyManager Intermediate CA
-				const regex = /^(?:issuer=)?(.*)$/gim;
-				const match = regex.exec(result);
-				if (match && typeof match[1] !== 'undefined') {
-					certData.issuer = match[1];
+				const issuerParams = internalCertificate.parseX509Output(result, 'issuer=');
+
+				if (typeof issuerParams.CN === 'undefined') {
+					throw new error.ValidationError('Could not determine issuer from certificate: ' + result);
 				}
+
+				certData['issuer'] = issuerParams.CN;
 			})
 			.then(() => {
 				return utils.execFile('openssl', ['x509', '-in', certificate_file, '-dates', '-noout']);
