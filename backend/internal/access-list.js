@@ -66,13 +66,26 @@ const internalAccessList = {
 					});
 				}
 
+				// Now add the client certificate references
+				if (typeof data.clientcas !== 'undefined' && data.clientcas) {
+					data.clientcas.map((certificate_id) => {
+						promises.push(accessListClientCAsModel
+							.query()
+							.insert({
+								access_list_id: row.id,
+								certificate_id: certificate_id
+							})
+						);
+					});
+				}
+
 				return Promise.all(promises);
 			})
 			.then(() => {
 				// re-fetch with expansions
 				return internalAccessList.get(access, {
 					id:     data.id,
-					expand: ['owner', 'items', 'clients', 'proxy_hosts.access_list.[clients,items]']
+					expand: ['owner', 'items', 'clients', 'clientcas', 'proxy_hosts.access_list.[clientcas.certificate,clients,items]']
 				}, true /* <- skip masking */);
 			})
 			.then((row) => {
@@ -205,6 +218,36 @@ const internalAccessList = {
 				}
 			})
 			.then(() => {
+				// Check for client certificates and add/update/remove them
+				if (typeof data.clientcas !== 'undefined' && data.clientcas) {
+					let promises = [];
+
+					data.clientcas.map(function (certificate_id) {
+						promises.push(accessListClientCAsModel
+							.query()
+							.insert({
+								access_list_id: data.id,
+								certificate_id: certificate_id
+							})
+						);
+					});
+
+					let query = accessListClientCAsModel
+						.query()
+						.delete()
+						.where('access_list_id', data.id);
+
+					return query
+						.then(() => {
+							// Add new items
+							if (promises.length) {
+								return Promise.all(promises);
+							}
+						});
+				}
+			})
+			.then(internalNginx.reload)
+			.then(() => {
 				// Add to audit log
 				return internalAuditLog.add(access, {
 					action:      'updated',
@@ -217,7 +260,7 @@ const internalAccessList = {
 				// re-fetch with expansions
 				return internalAccessList.get(access, {
 					id:     data.id,
-					expand: ['owner', 'items', 'clients', 'proxy_hosts.[certificate,access_list.[clients,items]]']
+					expand: ['owner', 'items', 'clients', 'clientcas', 'proxy_hosts.[certificate,access_list.[clientcas.certificate,clients,items]]']
 				}, true /* <- skip masking */);
 			})
 			.then((row) => {
@@ -259,7 +302,7 @@ const internalAccessList = {
 					.where('access_list.is_deleted', 0)
 					.andWhere('access_list.id', data.id)
 					.groupBy('access_list.id')
-					.allowGraph('[owner,items,clients,proxy_hosts.[certificate,access_list.[clients,items]]]')
+					.allowGraph('[owner,items,clients,clientcas,proxy_hosts.[certificate,access_list.[clientcas.certificate,clients,items]]]')
 					.first();
 
 				if (access_data.permission_visibility !== 'all') {
@@ -297,7 +340,7 @@ const internalAccessList = {
 	delete: (access, data) => {
 		return access.can('access_lists:delete', data.id)
 			.then(() => {
-				return internalAccessList.get(access, {id: data.id, expand: ['proxy_hosts', 'items', 'clients']});
+				return internalAccessList.get(access, {id: data.id, expand: ['proxy_hosts', 'items', 'clients', 'clientcas']});
 			})
 			.then((row) => {
 				if (!row || !row.id) {
@@ -383,7 +426,7 @@ const internalAccessList = {
 					})
 					.where('access_list.is_deleted', 0)
 					.groupBy('access_list.id')
-					.allowGraph('[owner,items,clients]')
+					.withGraphFetched('[owner,items,clients,clientcas.certificate]')
 					.orderBy('access_list.name', 'ASC');
 
 				if (access_data.permission_visibility !== 'all') {
