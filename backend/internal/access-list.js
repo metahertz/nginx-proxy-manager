@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 const _                     = require('lodash');
 const fs                    = require('node:fs');
 const batchflow             = require('batchflow');
@@ -10,6 +11,22 @@ const accessListClientModel = require('../models/access_list_client');
 const proxyHostModel        = require('../models/proxy_host');
 const internalAuditLog      = require('./audit-log');
 const internalNginx         = require('./nginx');
+=======
+const _                        = require('lodash');
+const fs                       = require('fs');
+const batchflow                = require('batchflow');
+const logger                   = require('../logger').access;
+const error                    = require('../lib/error');
+const utils                    = require('../lib/utils');
+const accessListModel          = require('../models/access_list');
+const accessListAuthModel      = require('../models/access_list_auth');
+const accessListClientModel    = require('../models/access_list_client');
+const accessListClientCAsModel = require('../models/access_list_clientcas');
+const proxyHostModel           = require('../models/proxy_host');
+const internalAuditLog         = require('./audit-log');
+const internalNginx            = require('./nginx');
+const config                   = require('../lib/config');
+>>>>>>> 1a3956e (Fully support client CAs with access-lists)
 
 function omissions () {
 	return ['is_deleted'];
@@ -396,6 +413,26 @@ const internalAccessList = {
 						}
 					})
 					.then(() => {
+						// delete the client CA file
+						let clientca_file = internalAccessList.getClientCAFilename(row);
+
+						try {
+							fs.unlinkSync(clientca_file);
+						} catch (err) {
+							// do nothing
+						}
+					})
+					.then(() => {
+						// delete the client geo file file
+						let client_file = internalAccessList.getClientFilename(row);
+
+						try {
+							fs.unlinkSync(client_file);
+						} catch (err) {
+							// do nothing
+						}
+					})
+					.then(() => {
 						// 4. audit log
 						return internalAuditLog.add(access, {
 							action:      'deleted',
@@ -550,6 +587,15 @@ const internalAccessList = {
 	/**
 	 * @param   {Object}  list
 	 * @param   {Integer} list.id
+	 * @returns {String}
+	 */
+	getClientFilename: (list) => {
+		return '/data/nginx/client/' + list.id + '.conf';
+	},
+
+	/**
+	 * @param   {Object}  list
+	 * @param   {Integer} list.id
 	 * @param   {String}  list.name
 	 * @param   {Array}   list.items
 	 * @param   {Array}   list.clientcas
@@ -641,8 +687,45 @@ const internalAccessList = {
 			}
 		});
 
+		const clientBuild = new Promise((resolve, reject) => {
+			logger.info('Building Access client file #' + list.id + ' for: ' + list.name);
+
+			let template      = null;
+			const client_file = internalAccessList.getClientFilename(list);
+			const data        = {
+				access_list: list
+			};
+
+			try {
+				template = fs.readFileSync(__dirname + '/../templates/access.conf', {encoding: 'utf8'});
+			} catch (err) {
+				reject(new error.ConfigurationError(err.message));
+				return;
+			}
+
+			return renderEngine
+				.parseAndRender(template, data)
+				.then((config_text) => {
+					fs.writeFileSync(client_file, config_text, {encoding: 'utf8'});
+
+					if (config.debug()) {
+						logger.success('Wrote config:', client_file, config_text);
+					}
+
+					resolve(true);
+				})
+				.catch((err) => {
+					if (config.debug()) {
+						logger.warn('Could not write ' + client_file + ':', err.message);
+					}
+
+					reject(new error.ConfigurationError(err.message));
+				});
+
+		});
+
 		// Execute both promises concurrently
-		return Promise.all([htPasswdBuild, caCertificateBuild]);
+		return Promise.all([htPasswdBuild, caCertificateBuild, clientBuild]);
 	}
 };
 
